@@ -55,11 +55,11 @@ static inline u32 rng_range_zero_u32(u64 hash, u32 n) {
     return (u32)(((hash >> 32) * (u64)n) >> 32);
 }
 
-static inline b32 rng_bool(u64 hash) {
+static inline bool rng_bool(u64 hash) {
     return (hash >> 63) != 0;
 }
 
-static inline b32 rng_chance(u64 hash, f32 prob) {
+static inline bool rng_chance(u64 hash, f32 prob) {
     return rng_f32(hash) < prob;
 }
 

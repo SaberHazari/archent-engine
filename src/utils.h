@@ -2,6 +2,7 @@
 #define UTILS_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 
 typedef int8_t i8;
