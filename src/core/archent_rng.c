@@ -1,4 +1,4 @@
-#include "rng.h"
+#include "archent_rng.h"
 
 void rng_alias_build(const f32 *weights, u32 n, f32 *prob, 
     u32 *alias, u32 *small_stack, u32 *large_stack, 

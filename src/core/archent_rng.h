@@ -1,9 +1,9 @@
-#ifndef RNG_H
-#define RNG_H
+#ifndef ARCHENT_RNG_H
+#define ARCHENT_RNG_H
 
-#include "utils.h"
-#include <math.h>
+#include "archent_utils.h"
 #include <assert.h>
+#include <math.h>
 
 typedef enum RngSalt {
     RNG_SALT_NONE = 0x00

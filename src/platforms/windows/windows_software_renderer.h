@@ -1,0 +1,6 @@
+#ifndef WINDOWS_SOFTWARE_RENDERER_H
+#define WINDOWS_SOFTWARE_RENDERER_H
+
+
+
+#endif
