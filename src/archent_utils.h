@@ -1,7 +1,8 @@
-#ifndef UTILS_H
-#define UTILS_H
+#ifndef ARCHENT_UTILS_H
+#define ARCHENT_UTILS_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 
 typedef int8_t i8;

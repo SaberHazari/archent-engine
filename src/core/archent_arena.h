@@ -1,7 +1,7 @@
-#ifndef ARENA_H
-#define ARENA_H
+#ifndef ARCHENT_ARENA_H
+#define ARCHENT_ARENA_H
 
-#include "utils.h"
+#include "archent_utils.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -30,7 +30,7 @@ struct ArenaBlock {
     usize used;
 };
 
-typedef struct Arena {
+typedef struct ArchentArena {
     const char *name;
     
     ArenaBlock *first_block;
@@ -44,21 +44,21 @@ typedef struct Arena {
     ArenaAllocFn alloc;
     ArenaFreeFn free;
     void *alloc_user;
-} Arena;
+} ArchentArena;
 
 typedef struct ArenaMark {
     ArenaBlock *block;
     usize used;
 } ArenaMark;
 
-typedef void (*ArenaFailFn)(const Arena *arena, usize size, usize align);
+typedef void (*ArenaFailFn)(const ArchentArena *arena, usize size, usize align);
 #ifdef ARENA_IMPLEMENTATION
     ArenaFailFn arena_fail_handler = NULL;
 #else
     extern ArenaFailFn arena_fail_handler;
 #endif
 
-static inline void arena__fail(const Arena *arena, usize size, usize align) {
+static inline void arena_fail_(const ArchentArena *arena, usize size, usize align) {
     if(arena_fail_handler) { arena_fail_handler(arena, size, align); }
     abort();
 }
@@ -74,30 +74,30 @@ static inline void arena__fail(const Arena *arena, usize size, usize align) {
 
 #if defined(ARENA_ASAN)
     #include <sanitizer/asan_interface.h>
-    #define arena__poison_m(p, n) ASAN_POISON_MEMORY_REGION((p), (n))
-    #define arena__unpoison_m(p, n) ASAN_UNPOISON_MEMORY_REGION((p), (n))
+    #define arena_poison_m_(p, n) ASAN_POISON_MEMORY_REGION((p), (n))
+    #define arena_unpoison_m_(p, n) ASAN_UNPOISON_MEMORY_REGION((p), (n))
 #else
-    #define arena__poison_m(p, n) ((void)(p), (void)(n))
-    #define arena__unpoison_m(p, n) ((void)(p), (void)(n))
+    #define arena_poison_m_(p, n) ((void)(p), (void)(n))
+    #define arena_unpoison_m_(p, n) ((void)(p), (void)(n))
 #endif
 
-void arena_init(Arena *arena, const char *name, usize minimum_block_size, 
+void arena_init(ArchentArena *arena, const char *name, usize minimum_block_size, 
     ArenaAllocFn alloc, ArenaFreeFn free, void *user);
 
-static inline void arena_init_default(Arena *arena, const char * name, usize minimum_block_size) {
+static inline void arena_init_default(ArchentArena *arena, const char * name, usize minimum_block_size) {
     arena_init(arena, name, minimum_block_size, 
         arena_default_alloc, arena_default_free, NULL);
 }
 
-void *arena_push(Arena *arena, usize size, usize align);
+void *arena_push(ArchentArena *arena, usize size, usize align);
 
-static inline void *arena_push_zero(Arena *arena, usize size, usize align) {
+static inline void *arena_push_zero(ArchentArena *arena, usize size, usize align) {
     void *result = arena_push(arena, size, align);
     if(result) { memset(result, 0, size); }
     return result;
 }
 
-static inline void *arena_push_array(Arena *arena, usize element, usize align, usize count) {
+static inline void *arena_push_array(ArchentArena *arena, usize element, usize align, usize count) {
     if(element == 0 || count == 0) { return NULL; }
     if(count > (usize)-1 / element) {
         arena__fail(arena, (usize)-1, align);
@@ -106,13 +106,13 @@ static inline void *arena_push_array(Arena *arena, usize element, usize align, u
     return arena_push_zero(arena, element * count, align);
 }
 
-static inline ArenaMark arena_mark(const Arena *arena) {
+static inline ArenaMark arena_mark(const ArchentArena *arena) {
     ArenaBlock *block = arena->current_block;
     return (ArenaMark){ block, block ? block->used : 0 };
 }
 
-void arena_pop_to(Arena *arena, ArenaMark mark);
-void arena_clear(Arena *arena);
-void arena_destroy(Arena *arena);
+void arena_pop_to(ArchentArena *arena, ArenaMark mark);
+void arena_clear(ArchentArena *arena);
+void arena_destroy(ArchentArena *arena);
 
 #endif

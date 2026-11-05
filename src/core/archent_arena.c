@@ -1,36 +1,36 @@
 #define ARENA_IMPLEMENTATION
-#include "arena.h"
+#include "archent_arena.h"
 #include <assert.h>
 
-static inline usize arena__align_up(usize n, usize align) {
+static inline usize arena_align_up_(usize n, usize align) {
     return (n + (align - 1)) & ~(align - 1);
 }
 
-static inline uptr arena_align_up_ptr(uptr addr, usize align) {
+static inline uptr arena_align_up_ptr_(uptr addr, usize align) {
     return (addr + (align - 1)) & ~(uptr)(align - 1);
 }
 
-static inline usize arena__block_header_size(void) {
+static inline usize arena_block_header_size_(void) {
     return arena__align_up(sizeof(ArenaBlock), ARENA_MIN_ALIGN);
 }
 
-static inline u8 *arena__block_data(ArenaBlock *block) {
-    return (u8 *)block + arena__block_header_size();
+static inline u8 *arena_block_data_(ArenaBlock *block) {
+    return (u8 *)block + arena_block_header_size_();
 }
 
-static inline ArenaBlock *arena__new_block(Arena *arena, usize min_data_size) {
+static inline ArenaBlock *arena_new_block_(ArchentArena *arena, usize min_data_size) {
     usize data_size = arena->minimum_block_size;
     if(data_size < min_data_size) { data_size = min_data_size; }
-    if(data_size > SIZE_MAX - arena__block_header_size() - (ARENA_MIN_ALIGN - 1)) {
-        arena__fail(arena, data_size, ARENA_MIN_ALIGN);
+    if(data_size > SIZE_MAX - arena_block_header_size_() - (ARENA_MIN_ALIGN - 1)) {
+        arena_fail_(arena, data_size, ARENA_MIN_ALIGN);
         return NULL;
     }
-    data_size = arena__align_up(data_size, ARENA_MIN_ALIGN);
+    data_size = arena_align_up_(data_size, ARENA_MIN_ALIGN);
     
-    usize total = arena__block_header_size() + data_size;
+    usize total = arena_block_header_size_() + data_size;
     u8 *raw = (u8 *)arena->alloc(total, arena->alloc_user);
     if(!raw) {
-        arena__fail(arena, data_size, ARENA_MIN_ALIGN);
+        arena_fail_(arena, data_size, ARENA_MIN_ALIGN);
         return NULL;
     }
     assert(((uptr)raw & (ARENA_MIN_ALIGN - 1)) == 0 && 
@@ -48,11 +48,11 @@ static inline ArenaBlock *arena__new_block(Arena *arena, usize min_data_size) {
     arena->current_block = block;
     arena->total_size += data_size;
     
-    arena__poison_m(arena__block_data(block), data_size);
+    arena_poison_m_(arena_block_data_(block), data_size);
     return block;
 }
 
-void arena_init(Arena *arena, const char *name, usize minimum_block_size, 
+void arena_init(ArchentArena *arena, const char *name, usize minimum_block_size, 
     ArenaAllocFn alloc, ArenaFreeFn free, void *user) {
     assert(arena && alloc && free && minimum_block_size > 0u);
     assert((minimum_block_size & (ARENA_MIN_ALIGN - 1u)) == 0u && 
@@ -70,7 +70,7 @@ void arena_init(Arena *arena, const char *name, usize minimum_block_size,
     arena->alloc_user = user;
 }
 
-void *arena_push(Arena *arena, usize size, usize align) {
+void *arena_push(ArchentArena *arena, usize size, usize align) {
     assert(arena);
     assert(align && (align & (align - 1)) == 0 && 
         "align must be a power of two");
@@ -78,9 +78,9 @@ void *arena_push(Arena *arena, usize size, usize align) {
     
     ArenaBlock *block = arena->current_block;
     if(block) {
-        uptr base = (uptr)arena__block_data(block);
+        uptr base = (uptr)arena_block_data_(block);
         uptr addr = base + block->used;
-        uptr aligned = arena_align_up_ptr(addr, align);
+        uptr aligned = arena_align_up_ptr_(addr, align);
         usize off = (usize)(aligned - base);
         
         if(off <= block->size && size <= block->size - off) {
@@ -89,20 +89,20 @@ void *arena_push(Arena *arena, usize size, usize align) {
             arena->total_used += new_used - block->used;
             if(arena->total_used > arena->peak) { arena->peak = arena->total_used; }
             block->used = new_used;
-            arena__unpoison_m(result, size);
+            arena_unpoison_m_(result, size);
             return result;
         }
     }
     
     if(size > SIZE_MAX - align) {
-        arena__fail(arena, size, align);
+        arena_fail_(arena, size, align);
         return NULL;
     }
-    ArenaBlock *fresh = arena__new_block(arena, size + align);
+    ArenaBlock *fresh = arena_new_block_(arena, size + align);
     if(!fresh) { return NULL; }
     
-    uptr base = (uptr)arena__block_data(fresh);
-    uptr aligned = arena_align_up_ptr(base, align);
+    uptr base = (uptr)arena_block_data_(fresh);
+    uptr aligned = arena_align_up_ptr_(base, align);
     usize off = (usize)(aligned - base);
     
     void *result = (u8 *)aligned;
@@ -110,19 +110,19 @@ void *arena_push(Arena *arena, usize size, usize align) {
     arena->total_used += new_used;
     if(arena->total_used > arena->peak) { arena->peak = arena->total_used; }
     fresh->used = new_used;
-    arena__unpoison_m(result, size);
+    arena_unpoison_m_(result, size);
     return result;
 }
 
-void arena_pop_to(Arena *arena, ArenaMark mark) {
+void arena_pop_to(ArchentArena *arena, ArenaMark mark) {
     assert(arena);
     
     ArenaBlock *block = arena->current_block;
     while(block != mark.block) {
         assert(block && "mark doesn't belong to this arena");
         ArenaBlock *prev = block->prev;
-        usize total = arena__block_header_size() + block->size;
-        arena__unpoison_m(arena__block_data(block), block->size);
+        usize total = arena_block_header_size_() + block->size;
+        arena_unpoison_m_(arena_block_data_(block), block->size);
         arena->total_size -= block->size;
         arena->total_used -= block->used;
         arena->free(block, total, arena->alloc_user);
@@ -136,7 +136,7 @@ void arena_pop_to(Arena *arena, ArenaMark mark) {
         usize old_used = arena->current_block->used;
         assert(mark.used <= old_used && "mark is newer than current usage");
         if(mark.used < old_used) {
-            arena__poison_m(arena__block_data(arena->current_block) + mark.used, old_used - mark.used);
+            arena_poison_m_(arena_block_data_(arena->current_block) + mark.used, old_used - mark.used);
             arena->total_used -= (old_used - mark.used);
         }
         arena->current_block->used = mark.used;
@@ -145,7 +145,7 @@ void arena_pop_to(Arena *arena, ArenaMark mark) {
     }
 }
 
-void arena_clear(Arena *arena) {
+void arena_clear(ArchentArena *arena) {
     assert(arena);
     if(!arena->first_block) { return; }
     
@@ -153,8 +153,8 @@ void arena_clear(Arena *arena) {
     ArenaBlock *block = arena->current_block;
     while(block != first) {
         ArenaBlock *prev = block->prev;
-        usize total = arena__block_header_size() + block->size;
-        arena__unpoison_m(arena__block_data(block), block->size);
+        usize total = arena_block_header_size_() + block->size;
+        arena_unpoison_m_(arena_block_data_(block), block->size);
         arena->total_size -= block->size;
         arena->free(block, total, arena->alloc_user);
         block = prev;
@@ -162,7 +162,7 @@ void arena_clear(Arena *arena) {
     
     first->next = NULL;
     if(first->used) {
-        arena__poison_m(arena__block_data(first), first->used);
+        arena_poison_m_(arena_block_data_(first), first->used);
     }
     first->used = 0;
     
@@ -170,13 +170,13 @@ void arena_clear(Arena *arena) {
     arena->total_used = 0;
 }
 
-void arena_destroy(Arena *arena) {
+void arena_destroy(ArchentArena *arena) {
     assert(arena);
     ArenaBlock *block = arena->first_block;
     while(block) {
         ArenaBlock *next = block->next;
-        usize total = arena__block_header_size() + block->size;
-        arena__unpoison_m(arena__block_data(block), block->size);
+        usize total = arena_block_header_size_() + block->size;
+        arena_unpoison_m_(arena_block_data_(block), block->size);
         arena->free(block, total, arena->alloc_user);
         block = next;
     }
