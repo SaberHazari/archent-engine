@@ -12,7 +12,7 @@
 #define arena_new_m(a, T) ((T *)arena_push_zero((a), sizeof(T), alignof(T)))
 #define arena_array_m(a, T, n) ((T *)arena_push_array((a), sizeof(T), alignof(T), (n)))
 
-#ifdef _cplusplus
+#ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -85,6 +85,9 @@ static inline void arena_fail_(const ArchentArena *arena, usize size, usize alig
     #define arena_unpoison_m_(p, n) ((void)(p), (void)(n))
 #endif
 
+void arena_init(ArchentArena *arena, const char *name, usize minimum_block_size, 
+    ArenaAllocFn alloc, ArenaFreeFn free, void *user);
+
 static inline void arena_init_default(ArchentArena *arena, const char * name, usize minimum_block_size) {
     arena_init(arena, name, minimum_block_size, 
         arena_default_alloc, arena_default_free, NULL);
@@ -153,8 +156,6 @@ static inline ArenaMark arena_mark(const ArchentArena *arena) {
     return mark;
 }
 
-void arena_init(ArchentArena *arena, const char *name, usize minimum_block_size, 
-    ArenaAllocFn alloc, ArenaFreeFn free, void *user);
 void arena_pop_to(ArchentArena *arena, ArenaMark mark);
 void arena_clear(ArchentArena *arena);
 void arena_destroy(ArchentArena *arena);
