@@ -3,6 +3,7 @@
 
 #include "archent_utils.h"
 #include "archent_arena.h"
+#include <assert.h>
 
 typedef struct ArchentMemory {
     ArchentArena permanent;
@@ -36,10 +37,14 @@ static inline void memory_destroy(ArchentMemory *memory) {
 }
 
 static inline TempMemory temp_memory_begin(ArchentArena *arena) {
-    return (TempMemory){ arena, arena_mark(arena) };
+    ++arena->temp_count;
+    TempMemory temp = { arena, arena_mark(arena) };
+    return temp;
 }
 
 static inline void temp_memory_end(TempMemory temp) {
+    assert(temp.arena->temp_count > 0 && "temp_memory_end without a temp_memory_begin");
+    --temp.arena->temp_count;
     arena_pop_to(temp.arena, temp.mark);
 }
 

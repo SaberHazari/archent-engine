@@ -5,6 +5,10 @@
 #include <assert.h>
 #include <math.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef enum RngSalt {
     RNG_SALT_NONE = 0x00
 } RngSalt;
@@ -52,11 +56,11 @@ static inline f32 rng_f32(u64 hash) {
 }
 
 static inline u32 rng_range_zero_u32(u64 hash, u32 n) {
-    return (u32)(((hash >> 32) * (u64)n) >> 32);
+    return (u32)(((hash & 0xFFFFFFFFull) * (u64)n) >> 32);
 }
 
 static inline bool rng_bool(u64 hash) {
-    return (hash >> 63) != 0;
+    return ((hash >> 32) & 1) != 0;
 }
 
 static inline bool rng_chance(u64 hash, f32 prob) {
@@ -64,11 +68,13 @@ static inline bool rng_chance(u64 hash, f32 prob) {
 }
 
 static inline i32 rng_sign(u64 hash) {
-    return (i32)(hash & 1) * 2 - 1;
+    return (i32)((hash >> 33) & 1) * 2 - 1;
 }
 
 static inline f32 rng_range_f32(u64 hash, f32 lo, f32 hi) {
-    return lo + rng_f32(hash) * (hi - lo);
+    if(hi <= lo) { return lo; }
+    f32 v = lo + rng_f32(hash) * (hi - lo);
+    return v >= hi ? nextafterf(hi, lo) : v;
 }
 
 static inline u32 rng_range_u32(u64 hash, u32 lo, u32 hi) {
@@ -103,7 +109,7 @@ static inline f32 rng_exponential(u64 hash, f32 lambda) {
 }
 
 static inline u32 rng_poisson_small(u64 seed, u64 a, u64 b, 
-RngSalt salt, f32 lambda) {
+    RngSalt salt, f32 lambda) {
     assert(lambda > 0.0f && lambda < 10.0f);
     if(lambda <= 0.0f) { lambda = 0.01f; }
     if(lambda >= 10.0f) { lambda = 9.99f; }
@@ -122,12 +128,17 @@ void rng_alias_build(const f32 *weights, u32 n, f32 *prob,
     RngAliasTable *out);
 
 static inline u32 rng_alias_pick(const RngAliasTable *table, u64 hash) {
+    assert(table->n > 0);
     u32 i = rng_range_zero_u32(hash, table->n);
-    f32 u = rng_f32(rng_splitmix64(hash));
+    f32 u = rng_f32(hash);
     return (u < table->prob[i]) ? i : table->alias[i];
 }
 
 void rng_shuffle(u64 seed, u64 a, u64 b, 
     RngSalt salt, u32 *arr, u32 n);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

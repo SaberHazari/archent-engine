@@ -6,7 +6,7 @@ void rng_alias_build(const f32 *weights, u32 n, f32 *prob,
     out->n = n;
     out->prob = prob;
     out->alias = alias;
-    if(n == 0) return;
+    if(n == 0) { return; }
     
     f64 sum = 0.0;
     for(u32 i = 0; i < n; ++i) {

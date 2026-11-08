@@ -1,22 +1,6 @@
-#define ARENA_IMPLEMENTATION
 #include "archent_arena.h"
-#include <assert.h>
 
-static inline usize arena_align_up_(usize n, usize align) {
-    return (n + (align - 1)) & ~(align - 1);
-}
-
-static inline uptr arena_align_up_ptr_(uptr addr, usize align) {
-    return (addr + (align - 1)) & ~(uptr)(align - 1);
-}
-
-static inline usize arena_block_header_size_(void) {
-    return arena__align_up(sizeof(ArenaBlock), ARENA_MIN_ALIGN);
-}
-
-static inline u8 *arena_block_data_(ArenaBlock *block) {
-    return (u8 *)block + arena_block_header_size_();
-}
+ArenaFailFn arena_fail_handler = NULL;
 
 static inline ArenaBlock *arena_new_block_(ArchentArena *arena, usize min_data_size) {
     usize data_size = arena->minimum_block_size;
@@ -52,48 +36,7 @@ static inline ArenaBlock *arena_new_block_(ArchentArena *arena, usize min_data_s
     return block;
 }
 
-void arena_init(ArchentArena *arena, const char *name, usize minimum_block_size, 
-    ArenaAllocFn alloc, ArenaFreeFn free, void *user) {
-    assert(arena && alloc && free && minimum_block_size > 0u);
-    assert((minimum_block_size & (ARENA_MIN_ALIGN - 1u)) == 0u && 
-        "minimum block size must be ARENA_MIN_ALIGN-aligned");
-    
-    arena->name = name;
-    arena->first_block = NULL;
-    arena->current_block = NULL;
-    arena->minimum_block_size = minimum_block_size;
-    arena->total_size = 0;
-    arena->total_used = 0;
-    arena->peak = 0;
-    arena->alloc = alloc;
-    arena->free = free;
-    arena->alloc_user = user;
-}
-
-void *arena_push(ArchentArena *arena, usize size, usize align) {
-    assert(arena);
-    assert(align && (align & (align - 1)) == 0 && 
-        "align must be a power of two");
-    if(size == 0) { return NULL; }
-    
-    ArenaBlock *block = arena->current_block;
-    if(block) {
-        uptr base = (uptr)arena_block_data_(block);
-        uptr addr = base + block->used;
-        uptr aligned = arena_align_up_ptr_(addr, align);
-        usize off = (usize)(aligned - base);
-        
-        if(off <= block->size && size <= block->size - off) {
-            void *result = (u8 *)aligned;
-            usize new_used = off + size;
-            arena->total_used += new_used - block->used;
-            if(arena->total_used > arena->peak) { arena->peak = arena->total_used; }
-            block->used = new_used;
-            arena_unpoison_m_(result, size);
-            return result;
-        }
-    }
-    
+void *arena_push_slow_(ArchentArena *arena, usize size, usize align) {
     if(size > SIZE_MAX - align) {
         arena_fail_(arena, size, align);
         return NULL;
@@ -112,6 +55,25 @@ void *arena_push(ArchentArena *arena, usize size, usize align) {
     fresh->used = new_used;
     arena_unpoison_m_(result, size);
     return result;
+}
+
+void arena_init(ArchentArena *arena, const char *name, usize minimum_block_size, 
+    ArenaAllocFn alloc, ArenaFreeFn free, void *user) {
+    assert(arena && alloc && free && minimum_block_size > 0u);
+    assert((minimum_block_size & (ARENA_MIN_ALIGN - 1u)) == 0u && 
+        "minimum block size must be ARENA_MIN_ALIGN-aligned");
+    
+    arena->name = name;
+    arena->first_block = NULL;
+    arena->current_block = NULL;
+    arena->minimum_block_size = minimum_block_size;
+    arena->total_size = 0;
+    arena->total_used = 0;
+    arena->peak = 0;
+    arena->temp_count = 0;
+    arena->alloc = alloc;
+    arena->free = free;
+    arena->alloc_user = user;
 }
 
 void arena_pop_to(ArchentArena *arena, ArenaMark mark) {
@@ -147,9 +109,11 @@ void arena_pop_to(ArchentArena *arena, ArenaMark mark) {
 
 void arena_clear(ArchentArena *arena) {
     assert(arena);
+    assert(arena->temp_count == 0 && "arena_clear inside an open temp_memory scope");
     if(!arena->first_block) { return; }
     
     ArenaBlock *first = arena->first_block;
+    usize wanted = arena->total_size;
     ArenaBlock *block = arena->current_block;
     while(block != first) {
         ArenaBlock *prev = block->prev;
@@ -158,6 +122,18 @@ void arena_clear(ArchentArena *arena) {
         arena->total_size -= block->size;
         arena->free(block, total, arena->alloc_user);
         block = prev;
+    }
+
+    if(wanted > first->size) {
+        usize total = arena_block_header_size_() + first->size;
+        arena_unpoison_m_(arena_block_data_(first), first->size);
+        arena->free(first, total, arena->alloc_user);
+        arena->first_block = NULL;
+        arena->current_block = NULL;
+        arena->total_size = 0;
+        arena->total_used = 0;
+        arena_new_block_(arena, wanted);
+        return;
     }
     
     first->next = NULL;

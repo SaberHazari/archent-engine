@@ -2,13 +2,19 @@
 #define ARCHENT_ARENA_H
 
 #include "archent_utils.h"
+#include <stdalign.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 
 #define ARENA_MIN_ALIGN 16u
 
-#define arena_new_m(a, T) ((T *)arena_push_zero((a), sizeof(T), _Alignof(T)))
-#define arena_array_m(a, T, n) ((T *)arena_push_array((a), sizeof(T), _Alignof(T), (n)))
+#define arena_new_m(a, T) ((T *)arena_push_zero((a), sizeof(T), alignof(T)))
+#define arena_array_m(a, T, n) ((T *)arena_push_array((a), sizeof(T), alignof(T), (n)))
+
+#ifdef _cplusplus
+extern "C" {
+#endif
 
 typedef void *(*ArenaAllocFn)(usize size, void *user);
 typedef void (*ArenaFreeFn)(void *ptr, usize size, void *user);
@@ -40,6 +46,7 @@ typedef struct ArchentArena {
     usize total_size;
     usize total_used;
     usize peak;
+    u32 temp_count;
     
     ArenaAllocFn alloc;
     ArenaFreeFn free;
@@ -52,11 +59,8 @@ typedef struct ArenaMark {
 } ArenaMark;
 
 typedef void (*ArenaFailFn)(const ArchentArena *arena, usize size, usize align);
-#ifdef ARENA_IMPLEMENTATION
-    ArenaFailFn arena_fail_handler = NULL;
-#else
-    extern ArenaFailFn arena_fail_handler;
-#endif
+
+extern ArenaFailFn arena_fail_handler;
 
 static inline void arena_fail_(const ArchentArena *arena, usize size, usize align) {
     if(arena_fail_handler) { arena_fail_handler(arena, size, align); }
@@ -81,15 +85,52 @@ static inline void arena_fail_(const ArchentArena *arena, usize size, usize alig
     #define arena_unpoison_m_(p, n) ((void)(p), (void)(n))
 #endif
 
-void arena_init(ArchentArena *arena, const char *name, usize minimum_block_size, 
-    ArenaAllocFn alloc, ArenaFreeFn free, void *user);
-
 static inline void arena_init_default(ArchentArena *arena, const char * name, usize minimum_block_size) {
     arena_init(arena, name, minimum_block_size, 
         arena_default_alloc, arena_default_free, NULL);
 }
 
-void *arena_push(ArchentArena *arena, usize size, usize align);
+static inline usize arena_align_up_(usize n, usize align) {
+    return (n + (align - 1)) & ~(align - 1);
+}
+
+static inline uptr arena_align_up_ptr_(uptr addr, usize align) {
+    return (addr + (align - 1)) & ~(uptr)(align - 1);
+}
+
+static inline usize arena_block_header_size_(void) {
+    return arena_align_up_(sizeof(ArenaBlock), ARENA_MIN_ALIGN);
+}
+
+static inline u8 *arena_block_data_(ArenaBlock *block) {
+    return (u8 *)block + arena_block_header_size_();
+}
+
+void *arena_push_slow_(ArchentArena *arena, usize size, usize align);
+
+static inline void *arena_push(ArchentArena *arena, usize size, usize align) {
+    assert(arena);
+    assert(align && (align & (align - 1)) == 0 && 
+        "align must be a power of two");
+    if(size == 0) { size = 1; }
+    
+    ArenaBlock *block = arena->current_block;
+    if(block) {
+        uptr base = (uptr)arena_block_data_(block);
+        uptr aligned = arena_align_up_ptr_(base + block->used, align);
+        usize off = (usize)(aligned - base);
+        
+        if(off <= block->size && size <= block->size - off) {
+            usize new_used = off + size;
+            arena->total_used += new_used - block->used;
+            if(arena->total_used > arena->peak) { arena->peak = arena->total_used; }
+            block->used = new_used;
+            arena_unpoison_m_((void *)aligned, size);
+            return (void *)aligned;
+        }
+    }
+    return arena_push_slow_(arena, size, align);
+}
 
 static inline void *arena_push_zero(ArchentArena *arena, usize size, usize align) {
     void *result = arena_push(arena, size, align);
@@ -98,9 +139,9 @@ static inline void *arena_push_zero(ArchentArena *arena, usize size, usize align
 }
 
 static inline void *arena_push_array(ArchentArena *arena, usize element, usize align, usize count) {
-    if(element == 0 || count == 0) { return NULL; }
+    if(element == 0 || count == 0) { return arena_push(arena, 0, align); }
     if(count > (usize)-1 / element) {
-        arena__fail(arena, (usize)-1, align);
+        arena_fail_(arena, (usize)-1, align);
         return NULL;
     }
     return arena_push_zero(arena, element * count, align);
@@ -108,11 +149,18 @@ static inline void *arena_push_array(ArchentArena *arena, usize element, usize a
 
 static inline ArenaMark arena_mark(const ArchentArena *arena) {
     ArenaBlock *block = arena->current_block;
-    return (ArenaMark){ block, block ? block->used : 0 };
+    ArenaMark mark = { block, block ? block->used : 0 };
+    return mark;
 }
 
+void arena_init(ArchentArena *arena, const char *name, usize minimum_block_size, 
+    ArenaAllocFn alloc, ArenaFreeFn free, void *user);
 void arena_pop_to(ArchentArena *arena, ArenaMark mark);
 void arena_clear(ArchentArena *arena);
 void arena_destroy(ArchentArena *arena);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
