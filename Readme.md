@@ -1,199 +1,183 @@
 # Archent
 
-Archent is a game engine written in C17, built around an entity component system. It's early. The repo has an arena allocator, a random number module and the start of a Windows platform layer. The ECS itself isn't written yet.
+Archent is a game engine written in C17, built around an entity component system. It's early. What exists so far is a memory system, a random number module and the start of a Windows platform layer. The ECS, input, rendering and a way to hook a game into the engine aren't written yet.
 
-## Status
+## How it fits together
 
-The arena allocator, the permanent/transient memory split and the rng module are written. The Windows platform layer is a skeleton: `WinMain` exists with an empty body, and the input, performance and software renderer files have nothing in them. `archent_ecs.h` and `archent_ecs.c` are empty too.
+The engine is split in two. The core, in `src/core/`, is the engine itself. It doesn't know which operating system it's running on, and nothing in it includes a platform header. The platform layer, in `src/platforms/<os>/`, is everything that does know: the entry point, input, performance and the software renderer. Only `windows` exists so far.
 
-There is no Linux platform layer yet. The Makefile already has Linux targets and looks for sources in `src/platforms/linux/`. There are no tests in the repo.
-
-## Layout
+The two sides share declarations in `src/platform_communication/`. For now that's `ArchentState`, a struct with one field (`running`), and a global `archent_state` that the platform layer defines. Nothing reads or writes it yet.
 
 ```
-Makefile                                   MinGW-w64 for Windows (run with wine), gcc-13 for Linux
 src/
-  archent_utils.h                          typedefs and size macros
-  core/
-    archent_arena.h, .c                    arena allocator
-    archent_memory.h                       permanent and transient arenas, temp scopes
-    archent_rng.h, .c                      random numbers
-    archent_ecs.h, .c                      empty
-  platform_communication/
-    platform_communication.h, .c           state shared with the platform layer
+  archent_utils.h                 types and size macros, used by everything
+  core/                           the engine
+    archent_rng.h, .c             random numbers
+    archent_ecs.h, .c             entity component system (empty)
+    archent_memory.h              memory, internal
+    archent_arena.h, .c           memory, internal
+  platform_communication/         declarations shared by the core and the platform layer
   platforms/
-    windows/
-      windows_archent.h, .c                WinMain, defines archent_state
-      windows_input_system.h, .c           empty
-      windows_performance.h, .c            empty
-      windows_software_renderer.h, .c      empty
+    windows/                      WinMain, input, performance, software renderer
 ```
 
-Nothing in `core/` includes platform headers.
+Inside the engine, memory comes from two arenas instead of a `malloc` per object. One is permanent and lasts as long as the engine runs. The other is transient and meant to be cleared once a frame. You don't allocate from either, so they aren't documented below.
+
+Not written yet: the ECS (`archent_ecs.h` and `.c` are empty), input, performance code and the software renderer (`windows_input_system`, `windows_performance` and `windows_software_renderer` are empty), and an entry point for game code (`WinMain` returns immediately). There's no Linux platform layer. The Makefile has Linux targets and looks for sources in `src/platforms/linux/`, but that directory doesn't exist.
+
+## Building
+
+The Makefile uses `find`, `mkdir -p` and `rm -rf`, so you need GNU make and a Unix-style shell. Windows builds use MinGW-w64 (`x86_64-w64-mingw32-gcc`), and the `run` targets start the exe with `wine`. Linux builds use `gcc-13`.
+
+```
+make                   debug build for Windows, same as make win-debug
+make win-release       release build for Windows
+make run               debug build, then run it under wine
+make win-release-run   release build, then run it under wine
+make clean             delete the build output for both platforms
+```
+
+The executable ends up in `build/debug/windows/archent-engine.exe` or `build/release/windows/archent-engine.exe`. Everything is compiled with `-Isrc` and the headers rely on it, so include them as `core/archent_rng.h` and `archent_utils.h`.
+
+Debug builds use `-O0 -g` and the undefined behavior sanitizer. On Windows the sanitizer is in trap mode, so undefined behavior crashes the program without printing anything. Release builds use `-O2 -DNDEBUG`, which removes the asserts.
+
+The `linux-*` targets are there, but they can't produce a binary yet. Without a Linux platform layer the link fails for lack of a `main`.
 
 ## Conventions
 
 The code is C17 and is compiled with `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wstrict-prototypes -Wmissing-prototypes`.
 
-- Fixed-width types come from `archent_utils.h`: `i8` to `i64`, `u8` to `u64`, `f32`, `f64` and `b32`, plus `usize` and `uptr`. `kilo_bytes_m`, `mega_bytes_m` and `giga_bytes_m` give byte counts as `u64`.
-- Functions start with the name of their module: `arena_push`, `memory_init`, `rng_hash`. Types are PascalCase: `ArchentArena`, `RngStream`.
-- Function-like macros end in `_m` (`arena_new_m`, `kilo_bytes_m`). Constants and enum values are upper case (`ARENA_MIN_ALIGN`, `RNG_SALT_NONE`).
-- A trailing underscore means internal: `arena_fail_`, `arena_block_data_`, `arena_poison_m_`. Don't call these from outside their module, and expect them to change. A few sit in headers only because an inline function uses them. The marker is a trailing underscore because C++ reserves identifiers that contain a double underscore, and the engine may end up linking with C++ code.
-- Bad arguments (an alignment that isn't a power of two, a mark from another arena) trip an `assert`. They don't return an error code. Release builds define `NDEBUG`, so the asserts are compiled out there.
+- Functions start with the name of their module: `rng_hash`, `rng_alias_build`. Types are PascalCase (`RngStream`). Function-like macros end in `_m` (`kilo_bytes_m`). Constants and enum values are upper case (`RNG_SALT_NONE`).
+- A name that ends in an underscore is internal. Don't call it, and expect it to change.
+- Some requirements on arguments are checked with an `assert`, and the reference below says which. Nothing returns an error code. Release builds define `NDEBUG`, which removes the asserts.
+- The headers in `core/` can be included from C++.
 
-## Memory
+## Reference
 
-### Arena
+### Types and macros
 
-`archent_arena.h`
+`archent_utils.h`
 
-An `ArchentArena` hands out memory by moving an offset forward through a chain of blocks. Each block is an `ArenaBlock` header (`prev`, `next`, `size`, `used`, padded to 16 bytes) followed by its data. You don't free single allocations. Memory comes back in bulk, by rewinding to a mark, clearing the arena or destroying it.
-
-The arena gets its blocks from two functions that you pass to `arena_init`:
-
-```c
-typedef void *(*ArenaAllocFn)(usize size, void *user);
-typedef void (*ArenaFreeFn)(void *ptr, usize size, void *user);
-
-void arena_init(ArchentArena *arena, const char *name, usize minimum_block_size,
-                ArenaAllocFn alloc, ArenaFreeFn free, void *user);
+```
+i8    i16   i32   i64     signed integers, 8 to 64 bits
+u8    u16   u32   u64     unsigned integers, 8 to 64 bits
+f32   f64                 float and double
+usize uptr                size_t and uintptr_t
 ```
 
-The allocator must return memory aligned to 16 bytes (`ARENA_MIN_ALIGN`). The free function is called with the same size the allocator was asked for. `arena_init_default` passes `arena_default_alloc` and `arena_default_free`, which call `malloc` and `free`. The plan is for each platform layer to pass its own, backed by the OS (`VirtualAlloc` on Windows).
-
-`arena_init` doesn't allocate. The first push does. `minimum_block_size` has to be a non-zero multiple of 16. When a push doesn't fit in the current block, a new block goes on the end of the chain. It holds at least `minimum_block_size` bytes, more if the request plus its alignment is bigger. Whatever space was left at the end of the previous block isn't used again until that block is rewound.
-
-#### Pushing
-
-- `arena_push(arena, size, align)` returns uninitialized memory. `align` must be a power of two, any power of two. A `size` of 0 is treated as 1, so the result is never `NULL`.
-- `arena_push_zero(arena, size, align)` is the same, zeroed.
-- `arena_push_array(arena, element, align, count)` returns zeroed memory for `count` elements of `element` bytes each. A multiplication overflow counts as an allocation failure. A count or element size of 0 is handled like a `size` of 0 in `arena_push`.
-- `arena_new_m(arena, T)` and `arena_array_m(arena, T, count)` are the typed versions. They're zeroed and use `sizeof` and `_Alignof` of `T`.
-
-#### Rewinding
+`bool`, `true` and `false` come from `<stdbool.h>`, which the header includes.
 
 ```c
-ArenaMark mark = arena_mark(&arena);
-/* ... pushes ... */
-arena_pop_to(&arena, mark);
+u64 kilo_bytes_m(value);
+u64 mega_bytes_m(value);
+u64 giga_bytes_m(value);
 ```
 
-`arena_pop_to` frees every block added after the mark and sets the marked block's `used` back to where it was. Marks have to be used in order: popping to a mark invalidates every mark taken after it. A mark taken on an arena with no blocks rewinds to no blocks, so the first block is freed too.
+Each one takes a number and gives back that many KiB, MiB or GiB as a byte count in a `u64`. The argument is cast to `u64` before it's multiplied and is evaluated once. `mega_bytes_m(256)` is 268435456.
 
-`arena_clear` frees every block except the first and resets the first to empty. If the arena had to use more than one block, the first block is also replaced by one as big as all the blocks were together, so the next frame of the same size fits in a single block.
+### Random numbers
 
-`arena_destroy` frees all the blocks. The arena keeps its allocator, so it can be pushed to again afterwards.
+`core/archent_rng.h`, plus `core/archent_rng.c` for `rng_alias_build` and `rng_shuffle`
 
-#### Counters
+The rng module keeps no state. Give it the same inputs and you get the same number back, every run, so you can reproduce a run. A number drawn for one entity also doesn't change what any other entity gets.
 
-`total_size` is the bytes of block data (headers not counted), `total_used` is the bytes handed out including alignment padding, and `peak` is the highest `total_used` has reached. Clearing or destroying the arena doesn't reset `peak`. `name` is stored for debugging; nothing reads it yet.
+Everything that starts from scratch takes the same four inputs:
 
-#### Failure
+- `seed`, a `u64` for the whole run.
+- `a` and `b`, two `u64` keys that you pick. An entity id and a tick number would do.
+- `salt`, an `RngSalt` that keeps different uses of the same keys apart. Give the damage roll and the loot roll different salts and they won't get the same number for the same entity on the same tick. Only `RNG_SALT_NONE` exists so far. The salt is mixed in as a plain number, so a cast integer works too.
 
-If an allocation fails or a size overflows, the arena calls `arena_fail_handler` if one is set, then `abort()`:
+The functions use no global state and don't allocate, so threads can call them as long as they don't share a stream, a table or an array. `rng_exponential` calls `logf` and `rng_poisson_small` calls `expf`, so their results can differ slightly between math libraries. Everything else is integer math and basic float arithmetic.
+
+#### Hashes and streams
 
 ```c
-typedef void (*ArenaFailFn)(const ArchentArena *arena, usize size, usize align);
-extern ArenaFailFn arena_fail_handler;
+u64 rng_hash(u64 seed, u64 a, u64 b, RngSalt salt);
+u64 rng_splitmix64(u64 num);
 ```
 
-A push never returns `NULL`.
-
-#### AddressSanitizer
-
-When built with `-fsanitize=address` the arena poisons the unused part of each block. A push unpoisons exactly the bytes it hands out, and rewinding or clearing poisons them again, so touching memory after a rewind gets reported.
-
-An arena isn't thread safe.
-
-### Permanent and transient
-
-`archent_memory.h`
-
-`ArchentMemory` is two arenas, named "Permanent" and "Transient", that share the same allocator functions.
+`rng_hash` takes the four inputs and returns a 64-bit hash. Most of the module starts from one. `rng_splitmix64` is the mixing step that `rng_hash` chains four times. It takes any `u64` and returns a well mixed one, and you'd call it yourself only to hash an integer of your own.
 
 ```c
-ArchentMemory memory;
-memory_init_default(&memory, mega_bytes_m(256), mega_bytes_m(32));
+RngStream rng_stream_begin(u64 seed, u64 a, u64 b, RngSalt salt);
+u64       rng_stream_next(RngStream *stream);
+u64       rng_stream_at(u64 seed, u64 a, u64 b, RngSalt salt, u64 i);
 ```
 
-The two numbers are the minimum block sizes for the permanent and transient arenas. `memory_init` takes the allocator functions and the user pointer as well.
+When one hash isn't enough, use a stream. `rng_stream_begin` returns one, and every `rng_stream_next` advances it and returns the next hash. An `RngStream` is a single `u64` that you shouldn't touch. Copying it copies its position.
 
-Permanent is for whatever lives as long as the program does. Nothing in `ArchentMemory` rewinds it, and `memory_destroy` frees it at shutdown. Transient is per-frame scratch. `memory_frame_reset` clears it, so call that once a frame.
+`rng_stream_at` gives you value number `i` for a set of keys without keeping a stream, so you can jump to any position. `i` can be any `u64`. It isn't the same sequence that `rng_stream_next` gives, and `rng_stream_at(seed, a, b, salt, 0)` is the same as `rng_hash(seed, a, b, salt)`.
+
+#### Turning a hash into a value
 
 ```c
-/* at startup */
-u32 *ids = arena_array_m(&memory.permanent, u32, 1024);
-
-/* every frame */
-memory_frame_reset(&memory);
-f32 *samples = arena_array_m(&memory.transient, f32, 4096);
+f32  rng_f32(u64 hash);
+u32  rng_range_zero_u32(u64 hash, u32 n);
+u32  rng_range_u32(u64 hash, u32 lo, u32 hi);
+i32  rng_range_i32(u64 hash, i32 lo, i32 hi);
+f32  rng_range_f32(u64 hash, f32 lo, f32 hi);
+bool rng_bool(u64 hash);
+i32  rng_sign(u64 hash);
+bool rng_chance(u64 hash, f32 prob);
 ```
 
-`TempMemory` is a scoped rewind. It works on any arena, not only the transient one:
+All of them take a hash from `rng_hash`, a stream or `rng_stream_at`.
 
-```c
-TempMemory temp = temp_memory_begin(&memory.transient);
-u32 *scratch = arena_array_m(&memory.transient, u32, 512);
-/* ... */
-temp_memory_end(temp);
-```
-
-Scopes can nest as long as they end in reverse order. A `TempMemory` is an arena pointer and an `ArenaMark`. Each arena counts its open scopes. In builds with asserts, `temp_memory_end` checks there is one to close and `arena_clear` (so `memory_frame_reset`) checks that none are left open.
-
-## Random numbers
-
-`archent_rng.h`
-
-The rng module has no global state. The same inputs always give the same result, and drawing for one set of keys never affects another. The inputs are a `seed`, two 64-bit keys `a` and `b` that the caller picks, and an `RngSalt` that keeps different uses of the same keys apart. Only `RNG_SALT_NONE` exists so far.
-
-The two functions that call `logf` or `expf` (`rng_exponential` and `rng_poisson_small`) can give slightly different results between math libraries. The rest is integer math and basic float arithmetic.
-
-A hash is a `u64`:
-
-```c
-u64 h = rng_hash(seed, a, b, RNG_SALT_NONE);
-```
-
-`rng_splitmix64` is the mixing step underneath, and `rng_hash` chains four of them. To get more than one value for the same keys, use a stream or index into one:
-
-```c
-RngStream s = rng_stream_begin(seed, a, b, RNG_SALT_NONE);
-u64 first  = rng_stream_next(&s);
-u64 second = rng_stream_next(&s);
-
-u64 nth = rng_stream_at(seed, a, b, RNG_SALT_NONE, n);   /* no stream state needed */
-```
-
-`rng_stream_at` is a different generator from `rng_stream_next`. Don't expect it to return the same sequence.
-
-### Turning a hash into a value
-
-| Function | Result |
+| Function | Returns |
 |---|---|
-| `rng_f32(h)` | `f32` in [0, 1) |
-| `rng_range_zero_u32(h, n)` | `u32` in [0, n) |
-| `rng_range_u32(h, lo, hi)` | `u32` in [lo, hi) |
-| `rng_range_i32(h, lo, hi)` | `i32` in [lo, hi) |
-| `rng_range_f32(h, lo, hi)` | `f32` in [lo, hi) |
-| `rng_bool(h)` | `true` or `false` |
-| `rng_sign(h)` | -1 or +1 |
-| `rng_chance(h, p)` | `true` with probability `p` |
+| `rng_f32` | an `f32` from 0 up to, but not including, 1 |
+| `rng_range_zero_u32` | a `u32` from 0 to `n - 1` |
+| `rng_range_u32` | a `u32` from `lo` to `hi - 1` |
+| `rng_range_i32` | an `i32` from `lo` to `hi - 1` |
+| `rng_range_f32` | an `f32` from `lo` up to, but not including, `hi` |
+| `rng_bool` | `true` or `false`, each half the time |
+| `rng_sign` | -1 or 1, each half the time |
+| `rng_chance` | `true` with probability `prob` |
 
-If `hi <= lo` the range functions return `lo`. `rng_range_zero_u32` multiplies instead of taking a remainder and has no rejection step, so it's very slightly biased for large `n` (at most `n / 2^32`).
+If `hi <= lo` the range functions return `lo`, and `rng_range_zero_u32(hash, 0)` returns 0. `rng_chance` is never true for a `prob` of 0 or less and always true for 1 or more.
 
-### One hash, one value
+The integer ranges multiply instead of taking a remainder, with no rejection step. That makes some values come up very slightly more often than others. The bias is at most `n / 2^32` for a range of `n` values, so it doesn't matter for ranges of a few thousand.
 
-A hash has 64 bits and each kind of value reads its own part. `rng_f32` (and `rng_chance` and `rng_range_f32` on top of it) reads the top 24. `rng_range_zero_u32` (and the integer range functions on top of it) reads the low 32. `rng_bool` reads bit 32 and `rng_sign` bit 33. One hash can feed one value of each kind, so `rng_f32(h)` and `rng_range_u32(h, 0, 10)` are independent. Two values of the same kind from one hash are the same draw, so take a new hash from a stream for the second one.
+#### Using a hash more than once
 
-### Distributions
+A hash has 64 bits and each kind of value reads its own part. `rng_f32`, `rng_chance` and `rng_range_f32` read the top 24. The integer ranges read the low 32. `rng_bool` reads bit 32 and `rng_sign` bit 33. So one hash can give you one value of each kind, and `rng_f32(h)` and `rng_range_u32(h, 0, 10)` are independent. Two values of the same kind from the same hash are the same draw. For a second one, take another hash from a stream.
 
-- `rng_normal_fast(hash1, hash2, hash3)` is a rough normal with mean 0 and variance 1, made from three uniform values. It never leaves the range -3 to 3 and its tails are lighter than a real normal's. `rng_normal_evt(seed, a, b, salt)` takes the three hashes from a stream.
-- `rng_exponential(h, lambda)` is an exponential with rate `lambda`, which has to be above 0. That's asserted. Without asserts it's clamped to 0.01.
-- `rng_poisson_small(seed, a, b, salt, lambda)` is a Poisson count using Knuth's method, for `lambda` below 10. That's asserted too. Without asserts `lambda` is clamped to the range 0.01 to 9.99.
+```c
+u64 h = rng_hash(world_seed, entity_id, tick, RNG_SALT_NONE);
+u32 damage = rng_range_u32(h, 5, 11);    /* 5 to 10 */
+bool crit = rng_chance(h, 0.1f);         /* reads other bits of h, so it's independent of damage */
+```
 
-### Weighted picks
+#### Distributions
 
-`rng_alias_build` makes an alias table, so picking by weight costs the same however many items there are:
+```c
+f32 rng_normal_fast(u64 hash1, u64 hash2, u64 hash3);
+f32 rng_normal_evt(u64 seed, u64 a, u64 b, RngSalt salt);
+f32 rng_exponential(u64 hash, f32 lambda);
+u32 rng_poisson_small(u64 seed, u64 a, u64 b, RngSalt salt, f32 lambda);
+```
+
+`rng_normal_fast` returns a rough normal with mean 0 and variance 1. It adds three uniform values, so it never leaves the range -3 to 3 and its tails are lighter than a real normal's. Pass it three different hashes, from a stream for example. Pass the same one three times and you get a uniform number between -3 and 3. `rng_normal_evt` does the three draws for you, from a stream started with the keys you give it.
+
+`rng_exponential` returns a value of 0 or more from an exponential distribution with rate `lambda`, so the mean is `1 / lambda`. The largest value it can return is about `16.6 / lambda`. `lambda` has to be above 0. That's asserted, and without asserts it's clamped to 0.01.
+
+`rng_poisson_small` returns a Poisson count with mean `lambda`. It uses Knuth's method, which only suits small `lambda`: it has to be above 0 and below 10. That's asserted too, and without asserts `lambda` is clamped to the range 0.01 to 9.99.
+
+#### Weighted picks
+
+```c
+typedef struct RngAliasTable {
+    u32 n;
+    f32 *prob;
+    u32 *alias;
+} RngAliasTable;
+
+void rng_alias_build(const f32 *weights, u32 n, f32 *prob, u32 *alias,
+                     u32 *small_stack, u32 *large_stack, RngAliasTable *out);
+u32  rng_alias_pick(const RngAliasTable *table, u64 hash);
+```
+
+`rng_alias_build` takes `n` weights and fills in `out`. After that, `rng_alias_pick` takes the table and a hash and returns an index from 0 to `n - 1`, chosen in proportion to the weights. A pick takes the same time however large `n` is. Building takes time proportional to `n`.
 
 ```c
 f32 weights[4] = { 1.0f, 3.0f, 0.0f, 6.0f };
@@ -203,19 +187,17 @@ u32 small_stack[4], large_stack[4];
 RngAliasTable table;
 
 rng_alias_build(weights, 4, prob, alias, small_stack, large_stack, &table);
-u32 pick = rng_alias_pick(&table, rng_hash(seed, a, b, RNG_SALT_NONE));
+u32 pick = rng_alias_pick(&table, rng_hash(world_seed, entity_id, tick, RNG_SALT_NONE));
 ```
 
-All the arrays belong to the caller. `prob` and `alias` need `n` entries each and have to stay alive as long as the table is used. The two stacks are scratch space and need `n` entries each. An item with weight 0 is never picked. If every weight is 0 the table is uniform. `rng_alias_pick` needs `n > 0`, and one hash is enough for it.
+The arrays are yours. `prob` and `alias` need room for `n` entries each and have to stay alive as long as you use the table, because the table points at them. `small_stack` and `large_stack` are scratch space for the build, `n` entries each, and you can throw them away afterwards. `weights` isn't changed. Weights must not be negative. An item with weight 0 is never picked, and if every weight is 0 the table is uniform.
 
-### Shuffling
+`rng_alias_pick` needs a table with at least one item. That's asserted. It uses both the integer and the float part of the hash, so don't use the same hash for another range or float value.
 
-`rng_shuffle(seed, a, b, salt, arr, n)` runs a Fisher-Yates shuffle over an array of `u32`. The same keys give the same order.
+#### Shuffling
 
-## ECS
+```c
+void rng_shuffle(u64 seed, u64 a, u64 b, RngSalt salt, u32 *arr, u32 n);
+```
 
-`archent_ecs.h` and `archent_ecs.c` are empty. The header includes the arena header, since that's where the ECS storage will come from.
-
-## Platform layer
-
-`platform_communication.h` declares what the engine and the platform layer share. For now that's `ArchentState`, which has one field (`running`), and an `extern` instance called `archent_state`. Each platform layer defines that instance. The Windows one does it in `windows_archent.c`, next to the empty `WinMain`.
+Shuffles the `n` elements of `arr` in place (Fisher-Yates). The same keys and `n` always give the same shuffle. It returns nothing, and leaves the array alone when `n` is 0 or 1. It only works on `u32` arrays, so to shuffle something else, shuffle an array of indices and look things up through it.
